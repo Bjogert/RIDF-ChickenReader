@@ -18,6 +18,7 @@ const char* mqtt_client_id = "chicken_monitor_1";
 // MQTT Topics
 const char* topic_nest_status = "chickens/nest1/status";
 const char* topic_nest_occupant = "chickens/nest1/occupant";
+const char* topic_nest_occupants = "chickens/nest1/occupants";  // NEW: Simple comma-separated format
 const char* topic_nest_duration = "chickens/nest1/duration";
 const char* topic_chicken_visits = "chickens/visits";
 const char* topic_chicken_leaderboard = "chickens/leaderboard";
@@ -36,7 +37,7 @@ struct ChickenStats {
   String name;
 };
 
-ChickenStats chickenStats[14]; // One for each chicken in database
+ChickenStats chickenStats[15]; // One for each chicken in database
 
 // RFID Reader Configuration for ESP32 D1 Mini
 #define RFID_RX_PIN 16      // GPIO16 (D0) - connect to RFID TX
@@ -70,8 +71,12 @@ bool waitingForPresenceConfirmation = false;
 int quickChanges = 0;
 unsigned long lastChangeTime = 0;
 bool multiChickenMode = false;
-String detectedChickens[14]; // Track ALL chickens in database (expanded from 5 to 14)
+String detectedChickens[15]; // Track ALL chickens in database (expanded from 5 to 15)
 int chickenCount = 0;
+unsigned long lastMultiChickenDetection = 0; // Track when we last detected multiple chickens
+unsigned long singleChickenReadings = 0; // Count consecutive single-chicken readings
+#define MULTI_CHICKEN_TIMEOUT 60000 // 60 seconds to confirm all chickens have left
+#define SINGLE_READINGS_THRESHOLD 10 // Number of single readings before considering exit
 
 // Chicken Database - Add your real chickens here
 struct Chicken {
@@ -88,7 +93,7 @@ Chicken chickenDatabase[] = {
   {"2003E98F1", "Ms.Foster", 4},       // ✓ SCANNED - new tag added
   {"2003E586A", "Kiwi", 5},            // ✓ SCANNED - new tag added
   {"2003E956D", "Skrik", 6},           // ✓ SCANNED - new tag added
-  {"200336896", "Panik", 7},           // ✓ SCANNED - new tag added
+  {"200336896", "Lady Klick", 7},      // ✓ SCANNED - updated name (was Panik)
   {"20032D5A4A", "Gästrid", 8},        // ✓ SCANNED - new tag added (note: 10 chars)
   {"2003E66AE", "Chick_1_2025", 9},    // ✓ SCANNED - new tag added
   {"2003E58C1", "Chick_2_2025", 10},   // ✓ SCANNED - new tag added
@@ -96,7 +101,8 @@ Chicken chickenDatabase[] = {
   {"2003F3CA0", "Chick_4_2025", 12},   // ✓ SCANNED - new tag added
   {"2003E6C2F", "Chick_5_2025", 13},   // ✓ SCANNED - new tag added
   {"2003E9525", "Chick_6_2025", 14},   // ✓ SCANNED - new tag added
-  // All 14 chickens now have valid tags!
+  {"2003E81EE", "Tuppen", 15},         // ✓ SCANNED - new tag added
+  // All 15 chickens now have valid tags!
 };
 
 int totalChickens = sizeof(chickenDatabase) / sizeof(chickenDatabase[0]);
@@ -105,6 +111,7 @@ int totalChickens = sizeof(chickenDatabase) / sizeof(chickenDatabase[0]);
 void updateChickenStats(int chickenNumber, unsigned long duration);
 void publishLeaderboard();
 void publishChickenChange(String previousChicken, String newChicken, unsigned long duration);
+void publishSimpleOccupants(); // NEW: Simple comma-separated occupants
 Chicken* findChickenByTag(String tagID);
 
 // WiFi connection function
@@ -205,6 +212,9 @@ void publishNestStatus(String status, String occupant = "", int duration = 0) {
   mqtt.publish(topic_nest_status, payload.c_str());
   mqtt.publish(topic_nest_occupant, occupant.c_str());
   
+  // NEW: Also publish simple occupants format
+  publishSimpleOccupants();
+  
   // Debug output
   Serial.println("MQTT Published:");
   Serial.println("  Topic: " + String(topic_nest_status) + " | Payload: " + payload);
@@ -254,9 +264,43 @@ void publishChickenChange(String previousChicken, String newChicken, unsigned lo
   mqtt.publish(topic_chicken_changes, payload.c_str());
 }
 
+// NEW: Function to publish simple comma-separated occupants format
+void publishSimpleOccupants() {
+  if (!mqtt.connected()) return;
+  
+  String occupantsList = "";
+  
+  if (!nestOccupied) {
+    // Empty nest
+    occupantsList = "Empty";
+  } else if (multiChickenMode && chickenCount > 0) {
+    // Multiple chickens - create comma-separated list
+    for (int i = 0; i < chickenCount; i++) {
+      Chicken* chicken = findChickenByTag(detectedChickens[i]);
+      if (chicken) {
+        if (i > 0) occupantsList += ",";
+        occupantsList += chicken->name;
+      }
+    }
+  } else {
+    // Single chicken
+    Chicken* chicken = findChickenByTag(currentChicken);
+    if (chicken) {
+      occupantsList = chicken->name;
+    } else {
+      occupantsList = "Empty";
+    }
+  }
+  
+  // Publish simple format to new topic
+  mqtt.publish(topic_nest_occupants, occupantsList.c_str());
+  
+  Serial.println("MQTT Simple Occupants: " + String(topic_nest_occupants) + " | " + occupantsList);
+}
+
 // Function to update chicken statistics
 void updateChickenStats(int chickenNumber, unsigned long duration) {
-  if (chickenNumber < 1 || chickenNumber > 14) return;
+  if (chickenNumber < 1 || chickenNumber > 15) return;
   
   int index = chickenNumber - 1;
   chickenStats[index].visits++;
@@ -280,14 +324,14 @@ void publishLeaderboard() {
   JsonArray leaderboard = doc["leaderboard"].to<JsonArray>();
   
   // Create array of chicken stats for sorting
-  ChickenStats sortedStats[14];
-  for (int i = 0; i < 14; i++) {
+  ChickenStats sortedStats[15];
+  for (int i = 0; i < 15; i++) {
     sortedStats[i] = chickenStats[i];
   }
   
   // Simple bubble sort by visit count
-  for (int i = 0; i < 13; i++) {
-    for (int j = 0; j < 13 - i; j++) {
+  for (int i = 0; i < 14; i++) {
+    for (int j = 0; j < 14 - i; j++) {
       if (sortedStats[j].visits < sortedStats[j + 1].visits) {
         ChickenStats temp = sortedStats[j];
         sortedStats[j] = sortedStats[j + 1];
@@ -297,7 +341,7 @@ void publishLeaderboard() {
   }
   
   // Add top 10 to JSON
-  for (int i = 0; i < 10 && i < 14; i++) {
+  for (int i = 0; i < 10 && i < 15; i++) {
     if (sortedStats[i].visits > 0) {
       JsonObject chicken = leaderboard.add<JsonObject>();
       chicken["rank"] = i + 1;
@@ -321,12 +365,12 @@ void setup() {
   delay(2000);
   
   Serial.println("=== Smart Chicken RFID Monitor v3.0 ===");
-  Serial.println("ESP32 D1 Mini - 19 Chicken System");
+  Serial.println("ESP32 D1 Mini - 15 Chicken System");
   Serial.println("Features: Enter/Exit tracking, MQTT, Scoring");
   Serial.println();
   
   // Initialize chicken stats
-  for (int i = 0; i < 14; i++) {
+  for (int i = 0; i < 15; i++) {
     chickenStats[i].visits = 0;
     chickenStats[i].totalTime = 0;
     chickenStats[i].lastVisit = 0;
@@ -564,7 +608,7 @@ void addChickenToList(String tagID) {
   }
   
   // Add new chicken if space available
-  if (chickenCount < 14) { // Expanded from 5 to 14 to track all chickens
+  if (chickenCount < 15) { // Expanded from 5 to 15 to track all chickens
     detectedChickens[chickenCount] = tagID;
     chickenCount++;
   }
@@ -609,7 +653,9 @@ void resetMultiChickenDetection() {
   quickChanges = 0;
   chickenCount = 0;
   multiChickenMode = false;
-  for (int i = 0; i < 14; i++) { // Clear all 14 slots (expanded from 5)
+  singleChickenReadings = 0;
+  lastMultiChickenDetection = 0;
+  for (int i = 0; i < 15; i++) { // Clear all 15 slots (expanded from 5)
     detectedChickens[i] = "";
   }
 }
@@ -741,15 +787,42 @@ void loop() {
       lastPresenceCheck = currentTime;
       waitingForPresenceConfirmation = false; // Cancel the waiting state
       
-      // IMPORTANT: Ensure current chicken is in the detected list (for multi-chicken tracking)
+      // IMPORTANT: Handle multi-chicken mode carefully due to hardware limitations
       if (multiChickenMode) {
-        addChickenToList(currentChicken); // Make sure current chicken stays in the list
-      }
-      
-      if (!multiChickenMode) {
-        Serial.println("✓ " + chickenInfo + " confirmed present");
+        // Increment counter for consecutive single-chicken readings
+        singleChickenReadings++;
+        
+        // Only exit multi-chicken mode after many consecutive single readings
+        // AND enough time has passed to be confident other chickens have left
+        if (singleChickenReadings >= SINGLE_READINGS_THRESHOLD && 
+            (millis() - lastMultiChickenDetection) > MULTI_CHICKEN_TIMEOUT) {
+          
+          Serial.println("*** EXITING MULTI-CHICKEN MODE ***");
+          Serial.println("Only " + chickenInfo + " detected for " + String(singleChickenReadings) + " consecutive readings");
+          Serial.println("Time since last multi-chicken activity: " + String((millis() - lastMultiChickenDetection)/1000) + "s");
+          
+          // Reset multi-chicken detection
+          resetMultiChickenDetection();
+          multiChickenMode = false;
+          singleChickenReadings = 0;
+          
+          // Publish single chicken status
+          Chicken* chicken = findChickenByTag(tagID);
+          if (chicken) {
+            publishNestStatus("occupied", chicken->name);
+            Serial.println("MQTT: Updated to single chicken mode - " + chicken->name);
+          }
+          
+          Serial.println("Status: OCCUPIED BY SINGLE CHICKEN");
+          Serial.println("===================");
+        } else {
+          // Still in multi-chicken mode, just show progress
+          Serial.println("✓ " + chickenInfo + " detected (single reading #" + String(singleChickenReadings) + 
+                        "/" + String(SINGLE_READINGS_THRESHOLD) + ", timeout in " + 
+                        String((MULTI_CHICKEN_TIMEOUT - (millis() - lastMultiChickenDetection))/1000) + "s)");
+        }
       } else {
-        Serial.println("✓ Multi-chicken activity continues");
+        Serial.println("✓ " + chickenInfo + " confirmed present");
       }
       
     } else {
@@ -761,6 +834,9 @@ void loop() {
         if (!multiChickenMode) {
           // First time detecting multiple chickens
           multiChickenMode = true;
+          lastMultiChickenDetection = millis(); // Record when we detected multiple chickens
+          singleChickenReadings = 0; // Reset counter
+          
           Serial.println("*** MULTIPLE CHICKENS DETECTED! ***");
           Serial.println("Rapid changes detected - cuddling chickens!");
           Serial.println("Chickens seen: ");
@@ -776,6 +852,9 @@ void loop() {
           
         } else {
           // Already in multi-chicken mode, but show updated list
+          lastMultiChickenDetection = millis(); // Update timestamp for continued activity
+          singleChickenReadings = 0; // Reset single-chicken counter
+          
           Serial.println("~ Multi-chicken activity continues ~");
           Serial.println("Updated chicken list:");
           for (int i = 0; i < chickenCount; i++) {
@@ -814,6 +893,9 @@ void loop() {
           
           // Also publish directly to occupant topic to ensure it updates
           mqtt.publish(topic_nest_occupant, newChicken->name.c_str());
+          
+          // NEW: Also update simple occupants format immediately
+          publishSimpleOccupants();
           
           Serial.println("MQTT: Updated occupant to " + newChicken->name);
         }
