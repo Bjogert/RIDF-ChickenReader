@@ -691,6 +691,10 @@ void loop() {
       }
     }
     Serial.println("[" + String(millis()/60000) + "min] " + status);
+    
+    // Also publish system heartbeat
+    mqtt.publish(topic_system_status, "online");
+    
     lastHeartbeat = millis();
   }
   
