@@ -50,23 +50,28 @@ GND           ↔ GND
 - **Direct Soldering Recommended** - For maximum reliability in outdoor conditions
 - Breadboard connections may cause intermittent failures
 
-## 📡 MQTT Integration
+## 📡 MQTT Integration (Multi‑Nest)
 
-The system publishes real-time data to these MQTT topics:
+Topics are namespaced per device using a nest tag (NEST_TAG). Examples use A/B/C, but you can use 1/2/3 if you prefer.
 
-### Real-time Status
-- `chickens/nest1/status` - JSON with nest status (empty/occupied/multiple)
-- `chickens/nest1/occupant` - Current chicken name(s)
-- `chickens/nest1/duration` - Visit duration when chicken leaves
+Format (for any tag X):
+- `chickens/nestX/status`     – JSON status: empty | occupied | multiple
+- `chickens/nestX/occupant`   – Current occupant string (single or comma‑separated)
+- `chickens/nestX/occupants`  – Simple comma‑separated occupants (redundant helper)
+- `chickens/nestX/duration`   – Visit duration when a chicken leaves (seconds)
+- `chickens/nestX/visits`     – Visit record (JSON) for the nest X
+- `chickens/nestX/changes`    – Within‑session change events (JSON)
+- `chickens/nestX/leaderboard`– Per‑nest leaderboard snapshot (JSON)
+- `chickens/nestX/system/status` – Heartbeat: online
 
-### Analytics & Events
-- `chickens/visits` - Individual visit records with duration and timestamps
-- `chickens/changes` - Real-time chicken change events within sessions
-- `chickens/leaderboard` - Top performing chickens with statistics
+Examples:
+- Nest A → `chickens/nestA/...`
+- Nest B → `chickens/nestB/...`
+- Nest C → `chickens/nestC/...`
 
 ### Example MQTT Messages
 
-**Single Chicken:**
+**Single Chicken (payload on status topic):**
 ```json
 {
   "status": "occupied",
@@ -89,13 +94,37 @@ The system publishes real-time data to these MQTT topics:
 
 ## 🏠 Home Assistant Integration
 
-Complete Home Assistant setup is documented in [`HOME_ASSISTANT_PROJECT_CONTEXT.md`](HOME_ASSISTANT_PROJECT_CONTEXT.md), including:
+Quick wiring for 3 nests (A/B/C). Create sensors (or use MQTT Discovery) per nest.
 
-- MQTT sensor configurations
-- Dashboard layouts and cards
-- Automation examples
-- Leaderboard and analytics setup
-- Social behavior tracking
+Minimal manual YAML example:
+```yaml
+mqtt:
+  sensor:
+    # Nest A
+    - name: "Nest A Status"
+      state_topic: "chickens/nestA/status"
+      value_template: "{{ value_json.status }}"
+      json_attributes_topic: "chickens/nestA/status"
+
+    - name: "Nest A Occupant"
+      state_topic: "chickens/nestA/occupant"
+
+    - name: "Nest A Occupants"
+      state_topic: "chickens/nestA/occupants"
+
+    - name: "Nest A Last Visit Duration"
+      state_topic: "chickens/nestA/duration"
+      unit_of_measurement: "s"
+
+    # Duplicate the above block for B and C, replacing nestA with nestB/nestC
+```
+
+Notes for dashboards and analytics:
+- Bind each picture/tile to its nest topic (A/B/C) for clear UI separation.
+- InfluxDB: store `chickens/nestX/visits` for each X to compute favorite nest, per‑chicken stats, and leaderboards. The nest is implied by the topic; you can tag it in your pipeline as `nest=A|B|C`.
+- If you need a single global leaderboard, aggregate across all three `chickens/nest*/visits` topics in InfluxDB or HA automations.
+
+For more details, also see [`HOME_ASSISTANT_PROJECT_CONTEXT.md`](HOME_ASSISTANT_PROJECT_CONTEXT.md).
 
 ## 🚀 Quick Start
 
@@ -109,6 +138,22 @@ Complete Home Assistant setup is documented in [`HOME_ASSISTANT_PROJECT_CONTEXT.
 2. Copy `include/secrets.h.template` to `include/secrets.h`
 3. Edit `secrets.h` with your WiFi and MQTT credentials
 4. Upload to ESP32 using PlatformIO
+
+Multi‑nest firmware variants (PlatformIO):
+- Environments are predefined: `nestA`, `nestB`, `nestC`.
+- Each sets a build flag `-DNEST_TAG="A|B|C"` and auto‑generates a unique MQTT client ID.
+
+PowerShell examples:
+```powershell
+# Build/flash Nest A
+pio run -e nestA; pio run -e nestA -t upload
+
+# Build/flash Nest B
+pio run -e nestB; pio run -e nestB -t upload
+
+# Build/flash Nest C
+pio run -e nestC; pio run -e nestC -t upload
+```
 
 ### 3. Configure Your Chickens
 Edit the `chickenDatabase[]` array in `main.cpp` with your chickens' RFID tag IDs:

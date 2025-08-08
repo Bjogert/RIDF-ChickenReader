@@ -68,6 +68,26 @@ namespace Secrets {
 3. Upload to ESP32 (Ctrl+Alt+U)
 4. Open Serial Monitor (115200 baud) to see output
 
+### 5. Multi‑Nest (A/B/C) Builds
+This firmware supports multiple identical devices by assigning a nest tag via build flags.
+
+- Predefined environments: `nestA`, `nestB`, `nestC` in `platformio.ini`
+- Each publishes to `chickens/nestA|nestB|nestC/...` and uses a unique MQTT client ID
+
+PowerShell examples:
+```powershell
+# Build & upload Nest A
+pio run -e nestA; pio run -e nestA -t upload
+
+# Build & upload Nest B
+pio run -e nestB; pio run -e nestB -t upload
+
+# Build & upload Nest C
+pio run -e nestC; pio run -e nestC -t upload
+```
+
+Prefer numbers? Duplicate one env and set `build_flags = -DNEST_TAG="1"` (or 2/3/4...).
+
 ## 🐔 Chicken Configuration
 
 ### 1. Scan Your RFID Tags
@@ -99,15 +119,35 @@ Ensure you have an MQTT broker running:
 - **Home Assistant**: Built-in Mosquitto add-on
 - **Standalone**: Install Mosquitto on Raspberry Pi or server
 
-### 2. Configure MQTT Sensors
-Add to your Home Assistant `configuration.yaml`:
+### 2. Configure MQTT Sensors (Per‑Nest)
+Add to your Home Assistant `configuration.yaml` (adjust A→B/C as needed):
 ```yaml
 mqtt:
   sensor:
-    - name: "Nest 1 Status"
-      state_topic: "chickens/nest1/status"
+    - name: "Nest A Status"
+      state_topic: "chickens/nestA/status"
       value_template: "{{ value_json.status }}"
-      json_attributes_topic: "chickens/nest1/status"
+      json_attributes_topic: "chickens/nestA/status"
+
+    - name: "Nest A Occupant"
+      state_topic: "chickens/nestA/occupant"
+
+    - name: "Nest A Occupants"
+      state_topic: "chickens/nestA/occupants"
+
+    - name: "Nest A Last Visit Duration"
+      state_topic: "chickens/nestA/duration"
+      unit_of_measurement: "s"
+
+    # Duplicate for Nest B and C
+    - name: "Nest B Status"
+      state_topic: "chickens/nestB/status"
+      value_template: "{{ value_json.status }}"
+      json_attributes_topic: "chickens/nestB/status"
+    - name: "Nest C Status"
+      state_topic: "chickens/nestC/status"
+      value_template: "{{ value_json.status }}"
+      json_attributes_topic: "chickens/nestC/status"
 ```
 
 ### 3. Complete HA Setup
@@ -116,6 +156,11 @@ Follow the detailed guide in [`HOME_ASSISTANT_PROJECT_CONTEXT.md`](HOME_ASSISTAN
 - Dashboard setup
 - Automation examples
 - Analytics and leaderboards
+
+### 4. InfluxDB/Analytics Tips
+- Subscribe and write all `chickens/nest*/visits` topics; add a tag like `nest=A|B|C` derived from the topic
+- Compute per‑chicken "favorite nest" by counting visit occurrences per nest
+- Build a global leaderboard by aggregating across all nests
 
 ## 🔍 Testing & Verification
 

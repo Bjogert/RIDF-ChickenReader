@@ -4,6 +4,9 @@
 #include <ArduinoJson.h>
 #include "secrets.h"
 
+// Optional: for ESP32 unique ID helpers
+#include <esp_system.h>
+
 // WiFi Configuration - From secrets.h
 const char* ssid = Secrets::WIFI_SSID;
 const char* password = Secrets::WIFI_PASSWORD;
@@ -13,17 +16,43 @@ const char* mqtt_server = Secrets::MQTT_SERVER;
 const int mqtt_port = 1883;
 const char* mqtt_user = Secrets::MQTT_USER;
 const char* mqtt_password = Secrets::MQTT_PASSWORD;
-const char* mqtt_client_id = "chicken_monitor_1";
 
-// MQTT Topics
-const char* topic_nest_status = "chickens/nest1/status";
-const char* topic_nest_occupant = "chickens/nest1/occupant";
-const char* topic_nest_occupants = "chickens/nest1/occupants";  // NEW: Simple comma-separated format
-const char* topic_nest_duration = "chickens/nest1/duration";
-const char* topic_chicken_visits = "chickens/visits";
-const char* topic_chicken_leaderboard = "chickens/leaderboard";
-const char* topic_chicken_changes = "chickens/changes";
-const char* topic_system_status = "chickens/system/status";
+// NEST_TAG identifies this device (e.g. "A", "B", "C" or "1", "2", "3")
+// You can set this via PlatformIO build_flags: -DNEST_TAG=\"A\"
+#ifndef NEST_TAG
+#define NEST_TAG "A"
+#endif
+
+// Build a unique client ID per device using NEST_TAG + MAC (no colons)
+static char mqtt_client_id[64];
+static void buildClientId() {
+  String mac = WiFi.macAddress(); // format: XX:XX:XX:XX:XX:XX
+  mac.replace(":", "");
+  snprintf(mqtt_client_id, sizeof(mqtt_client_id), "chicken_%s_%s", NEST_TAG, mac.c_str());
+}
+
+// MQTT Topics (per nest tag). Example when NEST_TAG=="A": chickens/nestA/status
+static char topic_nest_status[64];
+static char topic_nest_occupant[64];
+static char topic_nest_occupants[64];  // NEW: Simple comma-separated format
+static char topic_nest_duration[64];
+static char topic_chicken_visits[64];
+static char topic_chicken_leaderboard[64];
+static char topic_chicken_changes[64];
+static char topic_system_status[64]; // per-device system heartbeat
+
+static void initTopics() {
+  // Compose like: chickens/nest<NEST_TAG>/...
+  snprintf(topic_nest_status, sizeof(topic_nest_status), "chickens/nest%s/status", NEST_TAG);
+  snprintf(topic_nest_occupant, sizeof(topic_nest_occupant), "chickens/nest%s/occupant", NEST_TAG);
+  snprintf(topic_nest_occupants, sizeof(topic_nest_occupants), "chickens/nest%s/occupants", NEST_TAG);
+  snprintf(topic_nest_duration, sizeof(topic_nest_duration), "chickens/nest%s/duration", NEST_TAG);
+  // Per-nest visit/change/leaderboard topics to avoid cross-device collisions
+  snprintf(topic_chicken_visits, sizeof(topic_chicken_visits), "chickens/nest%s/visits", NEST_TAG);
+  snprintf(topic_chicken_leaderboard, sizeof(topic_chicken_leaderboard), "chickens/nest%s/leaderboard", NEST_TAG);
+  snprintf(topic_chicken_changes, sizeof(topic_chicken_changes), "chickens/nest%s/changes", NEST_TAG);
+  snprintf(topic_system_status, sizeof(topic_system_status), "chickens/nest%s/system/status", NEST_TAG);
+}
 
 // MQTT Client
 WiFiClient espClient;
@@ -142,7 +171,7 @@ void connectMQTT() {
   while (!mqtt.connected()) {
     Serial.print("Attempting MQTT connection...");
     
-    if (mqtt.connect(mqtt_client_id, mqtt_user, mqtt_password)) {
+  if (mqtt.connect(mqtt_client_id, mqtt_user, mqtt_password)) {
       Serial.println("connected");
       
       // Publish system online status
@@ -368,6 +397,10 @@ void setup() {
   Serial.println("ESP32 D1 Mini - 15 Chicken System");
   Serial.println("Features: Enter/Exit tracking, MQTT, Scoring");
   Serial.println();
+
+  // Initialize topics and unique MQTT client id early
+  initTopics();
+  buildClientId();
   
   // Initialize chicken stats
   for (int i = 0; i < 15; i++) {
@@ -398,7 +431,8 @@ void setup() {
   connectMQTT();
   
   Serial.println("System Status: READY");
-  Serial.println("Monitoring: Nesting Box #1");
+  Serial.print("Monitoring: Nesting Box #");
+  Serial.println(NEST_TAG);
   Serial.println("Smart Logic: Enter/Exit detection");
   Serial.println("Reset Control: Enabled on GPIO18");
   Serial.println("MQTT: Connected to Home Assistant");
